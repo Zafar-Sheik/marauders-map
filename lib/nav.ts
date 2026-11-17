@@ -45,6 +45,11 @@ export class NavGrid {
   res: number;
   cells: Uint8Array;
   sec: Section;
+  private g?: Float32Array;
+  private came?: Int32Array;
+  private seen?: Uint32Array;
+  private shut?: Uint32Array;
+  private stamp = 0;
 
   constructor(sec: Section) {
     this.sec = sec;
@@ -130,11 +135,20 @@ export class NavGrid {
     const N = w * h;
     const start = sj * w + si, goal = tj * w + ti;
     if (start === goal) return [b];
-    const g = new Float32Array(N).fill(Infinity);
-    const came = new Int32Array(N).fill(-1);
-    const closed = new Uint8Array(N);
+    // reuse search buffers between calls; a per-search stamp marks which entries are live
+    if (!this.g || this.g.length !== N) {
+      this.g = new Float32Array(N);
+      this.came = new Int32Array(N);
+      this.seen = new Uint32Array(N);
+      this.shut = new Uint32Array(N);
+    }
+    const stamp = ++this.stamp;
+    const g = this.g, came = this.came!, seen = this.seen!, shut = this.shut!;
+    const G = (n: number) => (seen[n] === stamp ? g[n] : Infinity);
     const heap = new MinHeap();
     g[start] = 0;
+    seen[start] = stamp;
+    came[start] = -1;
     const hx = (i: number, j: number) => {
       const dx = Math.abs(i - ti), dy = Math.abs(j - tj);
       return dx + dy + (Math.SQRT2 - 2) * Math.min(dx, dy);
@@ -145,8 +159,8 @@ export class NavGrid {
     while (heap.size) {
       const cur = heap.pop();
       if (cur === goal) { found = true; break; }
-      if (closed[cur]) continue;
-      closed[cur] = 1;
+      if (shut[cur] === stamp) continue;
+      shut[cur] = stamp;
       if (++iter > 400000) break;
       const ci = cur % w, cj = (cur / w) | 0;
       for (let dj = -1; dj <= 1; dj++)
@@ -155,11 +169,12 @@ export class NavGrid {
           const ni = ci + di, nj = cj + dj;
           if (ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
           const n = nj * w + ni;
-          if (!cells[n] || closed[n]) continue;
+          if (!cells[n] || shut[n] === stamp) continue;
           if (di && dj && (!cells[cj * w + ni] || !cells[nj * w + ci])) continue;
           const ng = g[cur] + (di && dj ? Math.SQRT2 : 1);
-          if (ng < g[n]) {
+          if (ng < G(n)) {
             g[n] = ng;
+            seen[n] = stamp;
             came[n] = cur;
             heap.push(n, ng + hx(ni, nj));
           }

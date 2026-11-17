@@ -91,7 +91,8 @@ export class FoldingSheet {
   private elapsed = 0;
   private raf = 0;
   private container: HTMLElement;
-  private textures: THREE.Texture[] = [];
+  /** GPU textures are cached per source canvas, so revisiting a section costs nothing */
+  private texCache = new Map<HTMLCanvasElement, THREE.CanvasTexture>();
   onFrame?: (dt: number) => void;
   /** extra top / bottom room (CSS px) reserved for UI chrome */
   insets = { top: 70, bottom: 86, side: 24 };
@@ -99,7 +100,7 @@ export class FoldingSheet {
   constructor(container: HTMLElement) {
     this.container = container;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
@@ -202,9 +203,6 @@ export class FoldingSheet {
 
   /** (re)build the panels for a section */
   build(cols: number, ink: HTMLCanvasElement, blank: HTMLCanvasElement, back: HTMLCanvasElement, coverInk: HTMLCanvasElement, coverBlank: HTMLCanvasElement) {
-    // dispose old
-    for (const t of this.textures) t.dispose();
-    this.textures = [];
     this.sheet.traverse((o) => {
       if ((o as THREE.Mesh).geometry) (o as THREE.Mesh).geometry.dispose();
     });
@@ -212,15 +210,7 @@ export class FoldingSheet {
     this.cols = [];
     this.ncols = cols;
 
-    const tex = (c: HTMLCanvasElement) => {
-      const t = new THREE.CanvasTexture(c);
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-      t.generateMipmaps = true;
-      t.minFilter = THREE.LinearMipmapLinearFilter;
-      this.textures.push(t);
-      return t;
-    };
+    const tex = (c: HTMLCanvasElement) => this.texture(c);
     const tInk = tex(ink), tBlank = tex(blank), tBack = tex(back), tCI = tex(coverInk), tCB = tex(coverBlank);
     const aspect = (cols * PANEL_W) / SHEET_H;
     Object.assign(this.frontMat.uniforms, {});
@@ -295,7 +285,31 @@ export class FoldingSheet {
     this.applyState();
   }
 
+  private texture(c: HTMLCanvasElement) {
+    let t = this.texCache.get(c);
+    if (!t) {
+      t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+      t.generateMipmaps = true;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      this.texCache.set(c, t);
+    }
+    return t;
+  }
+
+  /** create & upload a section's textures ahead of time (call during idle) */
+  prepare(...canvases: HTMLCanvasElement[]) {
+    for (const c of canvases) {
+      const fresh = !this.texCache.has(c);
+      const t = this.texture(c);
+      if (fresh) this.renderer.initTexture(t);
+    }
+  }
+
   setInk(ink: HTMLCanvasElement) {
+    const cached = this.texCache.get(ink);
+    if (cached) cached.needsUpdate = true;
     const t = this.frontMat.uniforms.uInk.value as THREE.CanvasTexture;
     if (t && t.image === ink) t.needsUpdate = true;
   }
@@ -327,6 +341,8 @@ export class FoldingSheet {
   }
 
   private bbox = new THREE.Box3();
+  private rootInv = new THREE.Matrix4();
+  private frameNo = 0;
   private tmp = new THREE.Vector3();
 
   private frameSheet(dt: number) {
@@ -336,11 +352,12 @@ export class FoldingSheet {
     this.sheet.position.set(0, 0, 0);
     this.sheet.updateMatrixWorld(true);
     // centre the visible extent
+    this.rootInv.copy(this.root.matrixWorld).invert();
     const b = this.bbox.makeEmpty();
     for (const c of this.cols) {
       for (const [x, y] of [[0, -CENTER_H / 2], [PANEL_W, -CENTER_H / 2], [0, CENTER_H / 2], [PANEL_W, CENTER_H / 2]]) {
         this.tmp.set(x, y, 0).applyMatrix4(c.group.matrixWorld);
-        this.tmp.applyMatrix4(new THREE.Matrix4().copy(this.root.matrixWorld).invert());
+        this.tmp.applyMatrix4(this.rootInv);
         b.expandByPoint(this.tmp);
       }
     }
@@ -394,7 +411,9 @@ export class FoldingSheet {
       this.frameSheet(dt);
     }
     this.onFrame?.(dt);
-    this.renderer.render(this.scene, this.camera);
+    // while the flat map is up, only dust is drawn here — 30fps is plenty for it
+    this.frameNo++;
+    if (this.sheetVisible || this.frameNo % 2 === 0) this.renderer.render(this.scene, this.camera);
   };
 
   /** ray-pick the sheet, returning the UV on whatever was hit */

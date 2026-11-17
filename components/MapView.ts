@@ -14,6 +14,16 @@ export type Hit =
 
 interface Burst { x: number; y: number; t: number; hue: number }
 
+const TILE = 512;
+const MAX_TILES = 96;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 9;
+
+/**
+ * The flat, interactive map. Zoom eases toward a target, drags carry momentum,
+ * and sharp detail is painted in 512px tiles a few at a time each frame (never
+ * blocking input) on top of the always-available base texture.
+ */
 export class MapView {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -34,15 +44,22 @@ export class MapView {
   bursts: Burst[] = [];
   revealAll = 0;
   fade = 1;
-  private detail: { canvas: HTMLCanvasElement; zoom: number; pan: { x: number; y: number }; w: number; h: number } | null = null;
-  private detailTimer: ReturnType<typeof setTimeout> | null = null;
+  private zTarget = 1;
+  private zAnchor = { x: 0, y: 0 };
+  private vel = { x: 0, y: 0 };
+  private lastMove = { x: 0, y: 0, t: 0 };
+  private tiles = new Map<string, { c: HTMLCanvasElement; used: number }>();
+  private tileVersion = 0;
   private drag: { x: number; y: number; px: number; py: number; moved: boolean } | null = null;
   private pinch: { d: number; zoom: number } | null = null;
   private touches = new Map<number, { x: number; y: number }>();
   private dark: HTMLCanvasElement = document.createElement("canvas");
+  private shadow: HTMLCanvasElement | null = null;
   onHover?: (h: Hit, x: number, y: number) => void;
   onClick?: (h: Hit, x: number, y: number) => void;
   onViewChange?: () => void;
+  /** fired on any direct user manipulation (lets callers cancel animations) */
+  onInteract?: () => void;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -71,30 +88,48 @@ export class MapView {
     this.canvas.style.height = r.height + "px";
     this.dark.width = this.canvas.width;
     this.dark.height = this.canvas.height;
-    this.detail = null;
   }
 
   setSection(sec: Section, base: HTMLCanvasElement) {
     this.sec = sec;
     this.base = base;
     this.k = pxPerMetre(sec);
-    this.zoom = 1;
-    this.pan = { x: 0, y: 0 };
-    this.detail = null;
+    this.shadow = null;
+    this.clearTiles();
+    this.setView(1, { x: 0, y: 0 });
   }
 
   setBase(base: HTMLCanvasElement) {
     this.base = base;
-    this.detail = null;
-    this.scheduleDetail();
+    this.clearTiles();
   }
 
-  /** sheet px → CSS px scale */
+  private clearTiles() {
+    this.tiles.clear();
+    this.tileVersion++;
+  }
+
+  /** set zoom & pan immediately (stops easing and momentum) */
+  setView(zoom: number, pan: { x: number; y: number }) {
+    this.zoom = this.zTarget = zoom;
+    this.pan = { ...pan };
+    this.vel = { x: 0, y: 0 };
+    this.clampPan();
+  }
+
+  /** stop any easing / momentum in progress */
+  halt() {
+    this.zTarget = this.zoom;
+    this.vel = { x: 0, y: 0 };
+  }
+
+  /** kept for callers; detail tiles are painted continuously now */
+  scheduleDetail() {}
+
   get scale() {
     return (this.fit.w / sheetPixels(this.sec).w) * this.zoom;
   }
 
-  /** matrix sheet px → CSS px */
   matrix() {
     const s = this.scale;
     const cx = this.fit.x + this.fit.w / 2, cy = this.fit.y + this.fit.h / 2;
@@ -113,29 +148,31 @@ export class MapView {
   }
 
   private clampPan() {
+    if (!this.sec) return;
     const sp = sheetPixels(this.sec);
     const s = this.scale;
     const W = sp.w * s, H = sp.h * s;
     const vw = this.canvas.width / this.dpr, vh = this.canvas.height / this.dpr;
     const mx = Math.max(0, (W - vw) / 2 + 60), my = Math.max(0, (H - vh) / 2 + 60);
     const cx0 = this.fit.x + this.fit.w / 2 - vw / 2, cy0 = this.fit.y + this.fit.h / 2 - vh / 2;
-    this.pan.x = Math.max(-mx - cx0, Math.min(mx - cx0, this.pan.x));
-    this.pan.y = Math.max(-my - cy0, Math.min(my - cy0, this.pan.y));
-    if (this.zoom <= 1.001) this.pan = { x: 0, y: 0 };
+    // near zoom 1 the allowed range shrinks smoothly to "centred", so zooming out never snaps
+    const t = Math.min(1, Math.max(0, (this.zoom - 1) / 0.3));
+    this.pan.x = Math.max((-mx - cx0) * t, Math.min((mx - cx0) * t, this.pan.x));
+    this.pan.y = Math.max((-my - cy0) * t, Math.min((my - cy0) * t, this.pan.y));
   }
 
+  /** zoom immediately about a screen point */
   zoomAt(cssX: number, cssY: number, factor: number) {
     const before = this.toMetres(cssX, cssY);
-    this.zoom = Math.max(1, Math.min(9, this.zoom * factor));
+    this.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.zoom * factor));
     const after = this.toScreen(before.x, before.y);
     this.pan.x += cssX - after.x;
     this.pan.y += cssY - after.y;
     this.clampPan();
-    this.scheduleDetail();
     this.onViewChange?.();
   }
 
-  /** centre on a point (metres) at a zoom level */
+  /** centre on a point (metres) at a zoom level — immediate */
   focus(mx: number, my: number, zoom: number) {
     this.zoom = zoom;
     this.pan = { x: 0, y: 0 };
@@ -144,42 +181,136 @@ export class MapView {
     this.pan.x = vw / 2 - p.x;
     this.pan.y = vh / 2 - p.y;
     this.clampPan();
-    this.scheduleDetail();
+    this.halt();
   }
 
-  scheduleDetail() {
-    if (this.detailTimer) clearTimeout(this.detailTimer);
-    this.detailTimer = setTimeout(() => this.renderDetail(), 180);
+  /** per-frame easing: zoom toward its target, momentum after a flick */
+  update(dt: number) {
+    if (!this.sec) return;
+    if (Math.abs(this.zTarget - this.zoom) > 1e-4) {
+      const f = 1 - Math.exp(-dt * 16);
+      let nz = this.zoom + (this.zTarget - this.zoom) * f;
+      if (Math.abs(this.zTarget - nz) < 2e-3) nz = this.zTarget;
+      this.zoomAt(this.zAnchor.x, this.zAnchor.y, nz / this.zoom);
+    }
+    if (!this.drag && (Math.abs(this.vel.x) > 3 || Math.abs(this.vel.y) > 3)) {
+      this.pan.x += this.vel.x * dt;
+      this.pan.y += this.vel.y * dt;
+      const decay = Math.exp(-dt * 5);
+      this.vel.x *= decay;
+      this.vel.y *= decay;
+      this.clampPan();
+    }
   }
 
-  private renderDetail() {
-    if (!this.sec || this.zoom < 1.25) { this.detail = null; return; }
+  /* ----------------------------- tiles ------------------------------ */
+  private tileLevel() {
+    const s = this.scale * this.dpr; // device px per sheet px
+    if (s <= 1.15) return 0;
+    return Math.min(16, Math.pow(2, Math.ceil(Math.log2(s - 0.05))));
+  }
+
+  private renderTile(level: number, tx: number, ty: number) {
     const c = document.createElement("canvas");
-    c.width = this.canvas.width;
-    c.height = this.canvas.height;
+    c.width = c.height = TILE;
     const ctx = c.getContext("2d")!;
-    const m = new DOMMatrix().scale(this.dpr).multiply(this.matrix());
-    renderSection(ctx, this.sec, { flags: this.flags, m, width: c.width, height: c.height });
-    this.detail = { canvas: c, zoom: this.zoom, pan: { ...this.pan }, w: c.width, h: c.height };
+    const span = TILE / level;
+    const m = new DOMMatrix().scale(level).translate(-tx * span, -ty * span);
+    const k = this.k;
+    renderSection(ctx, this.sec, {
+      flags: this.flags, m, width: TILE, height: TILE,
+      clip: { x0: (tx * span) / k, y0: (ty * span) / k, x1: ((tx + 1) * span) / k, y1: ((ty + 1) * span) / k },
+    });
+    return c;
+  }
+
+  private paintTiles(ctx: CanvasRenderingContext2D, m: DOMMatrix, budgetMs: number) {
+    const level = this.tileLevel();
+    if (!level) return;
+    const span = TILE / level;
+    const sp = sheetPixels(this.sec);
+    const inv = m.inverse();
+    const W = this.canvas.width, H = this.canvas.height;
+    const a = inv.transformPoint(new DOMPoint(0, 0)), b = inv.transformPoint(new DOMPoint(W, H));
+    const tx0 = Math.max(0, Math.floor(a.x / span)), ty0 = Math.max(0, Math.floor(a.y / span));
+    const tx1 = Math.min(Math.ceil(sp.w / span) - 1, Math.floor(b.x / span));
+    const ty1 = Math.min(Math.ceil(sp.h / span) - 1, Math.floor(b.y / span));
+    const now = performance.now();
+    const missing: [number, number, number][] = [];
+    const ccx = (a.x + b.x) / 2, ccy = (a.y + b.y) / 2;
+    ctx.save();
+    ctx.setTransform(m);
+    for (let ty = ty0; ty <= ty1; ty++)
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const t = this.tiles.get(`${level}:${tx}:${ty}`);
+        if (t) {
+          t.used = now;
+          ctx.drawImage(t.c, tx * span, ty * span, span, span);
+        } else missing.push([tx, ty, Math.hypot((tx + 0.5) * span - ccx, (ty + 0.5) * span - ccy)]);
+      }
+    if (missing.length) {
+      missing.sort((p, q) => p[2] - q[2]);
+      const start = performance.now();
+      const ver = this.tileVersion;
+      for (const [tx, ty] of missing) {
+        if (performance.now() - start > budgetMs) break;
+        const c = this.renderTile(level, tx, ty);
+        if (ver !== this.tileVersion) break;
+        this.tiles.set(`${level}:${tx}:${ty}`, { c, used: performance.now() });
+        ctx.drawImage(c, tx * span, ty * span, span, span);
+      }
+    }
+    ctx.restore();
+    if (this.tiles.size > MAX_TILES) {
+      const old = [...this.tiles.entries()].sort((p, q) => p[1].used - q[1].used).slice(0, this.tiles.size - MAX_TILES);
+      for (const [key] of old) this.tiles.delete(key);
+    }
+  }
+
+  private shadowSprite() {
+    if (this.shadow) return this.shadow;
+    const sp = sheetPixels(this.sec);
+    const w = 256, h = Math.round((256 * sp.h) / sp.w), pad = 40;
+    const c = document.createElement("canvas");
+    c.width = w + pad * 2;
+    c.height = h + pad * 2;
+    const x = c.getContext("2d")!;
+    x.shadowColor = "rgba(0,0,0,0.6)";
+    x.shadowBlur = 16;
+    x.shadowOffsetY = 5;
+    x.fillStyle = "#000";
+    x.fillRect(pad, pad, w, h);
+    this.shadow = c;
+    return c;
   }
 
   /* ----------------------------- input ------------------------------ */
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    this.onInteract?.();
     const r = this.canvas.getBoundingClientRect();
-    this.zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+    // trackpads send many small deltas, mice a few big ones — normalise both
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    const f = Math.exp(-Math.max(-120, Math.min(120, dy)) * (e.ctrlKey ? 0.01 : 0.0022));
+    this.zTarget = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.zTarget * f));
+    this.zAnchor = { x: e.clientX - r.left, y: e.clientY - r.top };
+    this.vel = { x: 0, y: 0 };
   };
 
   private onDown = (e: PointerEvent) => {
     const r = this.canvas.getBoundingClientRect();
+    this.onInteract?.();
+    this.halt();
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (this.touches.size === 2) {
       const [a, b] = [...this.touches.values()];
-      this.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), zoom: this.zoom };
+      this.pinch = { d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), zoom: this.zoom };
       this.drag = null;
       return;
     }
     this.drag = { x: e.clientX - r.left, y: e.clientY - r.top, px: this.pan.x, py: this.pan.y, moved: false };
+    this.lastMove = { x: e.clientX, y: e.clientY, t: performance.now() };
   };
 
   private onMove = (e: PointerEvent) => {
@@ -191,22 +322,27 @@ export class MapView {
       const [a, b] = [...this.touches.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
-      const target = Math.max(1, Math.min(9, this.pinch.zoom * (d / this.pinch.d)));
+      const target = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.pinch.zoom * (d / this.pinch.d)));
       this.zoomAt(cx, cy, target / this.zoom);
+      this.zTarget = this.zoom;
       return;
     }
     if (this.drag) {
       const dx = x - this.drag.x, dy = y - this.drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 4) this.drag.moved = true;
-      if (this.drag.moved && this.zoom > 1) {
+      if (this.drag.moved && this.zoom > 1.001) {
+        const now = performance.now();
+        const dtm = Math.max(1, now - this.lastMove.t);
+        this.vel.x = this.vel.x * 0.6 + ((e.clientX - this.lastMove.x) / dtm) * 1000 * 0.4;
+        this.vel.y = this.vel.y * 0.6 + ((e.clientY - this.lastMove.y) / dtm) * 1000 * 0.4;
+        this.lastMove = { x: e.clientX, y: e.clientY, t: now };
         this.pan.x = this.drag.px + dx;
         this.pan.y = this.drag.py + dy;
         this.clampPan();
-        this.scheduleDetail();
         this.onViewChange?.();
       }
       this.canvas.style.cursor = this.drag.moved ? "grabbing" : "";
-    } else if (this.pointer.inside) {
+    } else if (this.pointer.inside && !this.touches.size) {
       this.onHover?.(this.hitTest(x, y), x, y);
     }
   };
@@ -218,6 +354,7 @@ export class MapView {
     const d = this.drag;
     this.drag = null;
     this.canvas.style.cursor = "";
+    if (performance.now() - this.lastMove.t > 80) this.vel = { x: 0, y: 0 };
     if (!d.moved && e.type === "pointerup") {
       const r = this.canvas.getBoundingClientRect();
       const x = e.clientX - r.left, y = e.clientY - r.top;
@@ -273,26 +410,17 @@ export class MapView {
     const m = new DOMMatrix().scale(this.dpr).multiply(this.matrix());
     const sp = sheetPixels(this.sec);
 
-    // shadow
+    // soft shadow from a tiny pre-blurred sprite — no per-frame blur
+    const sh = this.shadowSprite();
+    const padX = (40 / 256) * sp.w, padY = padX;
     ctx.save();
     ctx.setTransform(m);
-    ctx.shadowColor = "rgba(0,0,0,0.55)";
-    ctx.shadowBlur = 60 * this.dpr;
-    ctx.shadowOffsetY = 18 * this.dpr;
-    ctx.fillStyle = "#c9a970";
-    ctx.fillRect(0, 0, sp.w, sp.h);
+    ctx.drawImage(sh, -padX, -padY + sp.w * 0.008, sp.w + padX * 2, sp.h + padY * 2);
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(this.base, 0, 0);
     ctx.restore();
-
-    const d = this.detail;
-    if (d && d.zoom === this.zoom && d.pan.x === this.pan.x && d.pan.y === this.pan.y && d.w === W) {
-      ctx.drawImage(d.canvas, 0, 0);
-    } else {
-      ctx.save();
-      ctx.setTransform(m);
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(this.base, 0, 0);
-      ctx.restore();
-    }
+    // sharp detail, painted progressively within a per-frame time budget
+    this.paintTiles(ctx, m, this.drag || this.pinch ? 3 : 8);
 
     // the Grand Staircase: flights that swing to new landings every so often
     for (const sp2 of this.sec.spaces) {

@@ -42,7 +42,7 @@ Click a name to see where they are, then **Follow the footprints** — the map f
 ## Things to try (no spoilers beyond this list)
 
 Type into the bar at the bottom, or just type anywhere:
-`lumos`, `nox`, `homenum revelio`, `accio <name>`, `expecto patronum`, `dissendium`, `full moon`, `time turner`, a Fat Lady password, a Prefects' bathroom password, the gargoyle's password, the Konami code… and click on anything that looks like a statue, a painting, a mirror, a sink or a tapestry. There are 24 secrets to find.
+`lumos`, `nox`, `homenum revelio`, `accio <name>`, `expecto patronum`, `dissendium`, `full moon`, `time turner`, a Fat Lady password, a Prefects' bathroom password, the gargoyle's password, the Konami code… and click on anything that looks like a statue, a painting, a mirror, a sink or a tapestry. There are 33 secrets to find.
 
 ## Code map
 

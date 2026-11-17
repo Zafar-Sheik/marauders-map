@@ -32,10 +32,14 @@ export default function Marauders() {
   const view = useRef<MapView | null>(null);
   const sim = useRef<Simulation | null>(null);
   const bases = useRef(new Map<string, HTMLCanvasElement>());
+  const stale = useRef(new Set<string>());
   const flags = useRef(new Set<string>());
   const phaseRef = useRef<Phase>("loading");
   const sectionRef = useRef("grounds");
   const followRef = useRef<string | null>(null);
+  const followPause = useRef(0);
+  const liveUi = useRef(false);
+  const hoverPos = useRef<{ x: number; y: number } | null>(null);
   const covers = useRef<{ ink: HTMLCanvasElement; blank: HTMLCanvasElement } | null>(null);
 
   const [phase, setPhaseState] = useState<Phase>("loading");
@@ -70,6 +74,7 @@ export default function Marauders() {
   /* rendering helpers                                             */
   const baseFor = useCallback((id: string, force = false) => {
     const key = id;
+    if (stale.current.has(key)) { force = true; stale.current.delete(key); }
     if (!force && bases.current.has(key)) return bases.current.get(key)!;
     const sec = SECTION_BY_ID[id];
     const { w, h } = sheetPixels(sec);
@@ -108,9 +113,10 @@ export default function Marauders() {
     const v = view.current!, s = sheet.current!;
     // ease the 2D view back to the resting fit so the swap is seamless
     if (v.zoom > 1.001 || v.pan.x || v.pan.y) {
+      cancelFocus();
       const st = { z: v.zoom, x: v.pan.x, y: v.pan.y };
       await new Promise<void>((res) =>
-        gsap.to(st, { z: 1, x: 0, y: 0, duration: 0.5, ease: "power2.inOut", onUpdate: () => { v.zoom = st.z; v.pan = { x: st.x, y: st.y }; }, onComplete: () => res() }),
+        gsap.to(st, { z: 1, x: 0, y: 0, duration: 0.45, ease: "power2.inOut", onUpdate: () => v.setView(st.z, { x: st.x, y: st.y }), onComplete: () => res() }),
       );
     }
     s.sheetVisible = true;
@@ -233,8 +239,9 @@ export default function Marauders() {
     revealNames: () => { view.current!.revealAll = performance.now() + 6000; },
     hideLabels: (s) => { view.current!.hideLabels = true; setTimeout(() => (view.current!.hideLabels = false), s * 1000); },
     rerender: () => {
-      // re-ink every cached section so newly revealed secrets appear
-      for (const id of [...bases.current.keys()]) baseFor(id, true);
+      // re-ink only the section on show now; the rest refresh lazily when next opened
+      for (const id of bases.current.keys()) if (id !== sectionRef.current) stale.current.add(id);
+      baseFor(sectionRef.current, true);
       const v = view.current!;
       v.setBase(baseFor(sectionRef.current));
       sheet.current!.setInk(baseFor(sectionRef.current));
@@ -274,7 +281,7 @@ export default function Marauders() {
       sim.current = new Simulation();
       // let everybody settle into the castle before the map is opened
       const t0 = performance.now();
-      for (let i = 0; i < 400 && performance.now() - t0 < 1500; i++) sim.current.step(0.1);
+      for (let i = 0; i < 300 && performance.now() - t0 < 700; i++) sim.current.step(0.1);
       covers.current = { ink: coverInk(), blank: coverBlank() };
       const s = new FoldingSheet(threeRef.current!);
       sheet.current = s;
@@ -291,33 +298,47 @@ export default function Marauders() {
         sim.current!.step(dt);
         const vv = view.current!;
         if (phaseRef.current === "open") {
+          vv.update(dt);
           const fid = followRef.current;
-          if (fid) {
+          if (fid && now > followPause.current) {
             const c = sim.current!.get(fid);
             if (c) {
               if (c.section !== sectionRef.current) void apiRef.current.goto(c.section, { x: c.x, y: c.y, zoom: Math.max(2.2, vv.zoom) });
               else {
                 const vw = vv.canvas.width / vv.dpr, vh = vv.canvas.height / vv.dpr;
                 const p = vv.toScreen(c.x, c.y);
-                vv.pan.x += (vw / 2 - p.x) * 0.06;
-                vv.pan.y += (vh / 2 - p.y) * 0.06;
-                vv.scheduleDetail();
+                const f = 1 - Math.exp(-dt * 3.5);
+                vv.setView(vv.zoom, { x: vv.pan.x + (vw / 2 - p.x) * f, y: vv.pan.y + (vh / 2 - p.y) * f });
               }
             }
           }
           vv.draw(sim.current!, now);
         }
-        if (now - lastTick > 1000) { lastTick = now; setTick((t) => t + 1); }
+        // only re-render React when something on screen shows live locations
+        if (now - lastTick > 1000 && (liveUi.current || now - lastTick > 5000)) { lastTick = now; setTick((t) => t + 1); }
       };
-      v.onHover = (h, x, y) => setHover(describe(h, x, y));
+      let lastHoverKey = "";
+      v.onHover = (h, x, y) => {
+        const d = describe(h, x, y);
+        const key = d ? d.title : "";
+        // avoid re-rendering React on every mouse move unless the hovered thing changed or moved a lot
+        if (key !== lastHoverKey || (d && hoverPos.current && Math.hypot(d.x - hoverPos.current.x, d.y - hoverPos.current.y) > 6)) {
+          lastHoverKey = key;
+          hoverPos.current = d ? { x: d.x, y: d.y } : null;
+          setHover(d);
+        }
+      };
+      v.onInteract = () => {
+        cancelFocus();
+        // the user is steering: let "follow" stop recentring for a few seconds
+        followPause.current = performance.now() + 4000;
+      };
       v.onClick = (h) => onMapClick(h);
       const onResize = () => {
         if (phaseRef.current === "open") {
           v.resize();
           v.fit = s.openRect();
-          v.zoom = 1;
-          v.pan = { x: 0, y: 0 };
-          v.scheduleDetail();
+          v.setView(1, { x: 0, y: 0 });
         }
       };
       window.addEventListener("resize", onResize);
@@ -330,6 +351,29 @@ export default function Marauders() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* once open, quietly prepare the other sections in idle time so switching never hitches */
+  useEffect(() => {
+    if (phase !== "open") return;
+    const queue = SECTIONS.map((s) => s.id).filter((id) => !bases.current.has(id) || stale.current.has(id));
+    let handle = 0;
+    const ric: (cb: () => void) => number = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: object) => number }).requestIdleCallback
+      ? (cb) => (window as unknown as { requestIdleCallback: (cb: () => void, o?: object) => number }).requestIdleCallback(cb, { timeout: 2000 })
+      : (cb) => window.setTimeout(cb, 300);
+    const step = () => {
+      if (phaseRef.current !== "open") return;
+      const id = queue.shift();
+      if (!id) return;
+      const sec = SECTION_BY_ID[id];
+      sheet.current?.prepare(baseFor(id), blankFor(sec), blankFor(sec, true));
+      handle = ric(step);
+    };
+    handle = ric(step);
+    return () => {
+      const cic = (window as unknown as { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
+      if (cic) cic(handle); else clearTimeout(handle);
+    };
+  }, [phase, baseFor]);
 
   /* sync toggles into the engines */
   useEffect(() => {
@@ -344,6 +388,8 @@ export default function Marauders() {
   useEffect(() => { if (sim.current) sim.current.timeScale = speed; }, [speed]);
   useEffect(() => { setSound(sound); }, [sound]);
   useEffect(() => { if (view.current) view.current.highlight = following ?? (card?.kind === "char" ? card.id : null); }, [following, card]);
+
+  useEffect(() => { liveUi.current = peopleOpen || !!card; }, [peopleOpen, card]);
 
   /* people drawer animation */
   useEffect(() => {
@@ -641,7 +687,14 @@ function splitChars(t: string) {
   );
 }
 
+let focusTween: gsap.core.Tween | null = null;
+export function cancelFocus() {
+  focusTween?.kill();
+  focusTween = null;
+}
+
 function animateFocus(v: MapView, f: { x: number; y: number; zoom: number }) {
+  cancelFocus();
   const start = { z: v.zoom, x: v.pan.x, y: v.pan.y };
   // compute target pan for the focus point at the target zoom
   const saveZ = v.zoom, saveP = { ...v.pan };
@@ -650,10 +703,18 @@ function animateFocus(v: MapView, f: { x: number; y: number; zoom: number }) {
   v.zoom = saveZ;
   v.pan = saveP;
   const st = { ...start };
-  gsap.to(st, {
-    z: target.z, x: target.x, y: target.y, duration: 1.1, ease: "power2.inOut",
-    onUpdate: () => { v.zoom = st.z; v.pan = { x: st.x, y: st.y }; },
-    onComplete: () => v.scheduleDetail(),
+  // interpolate zoom geometrically so the motion feels even at every scale
+  const lz0 = Math.log(start.z), lz1 = Math.log(target.z);
+  const p = { t: 0 };
+  focusTween = gsap.to(p, {
+    t: 1, duration: 0.9, ease: "power2.inOut",
+    onUpdate: () => {
+      st.z = Math.exp(lz0 + (lz1 - lz0) * p.t);
+      st.x = start.x + (target.x - start.x) * p.t;
+      st.y = start.y + (target.y - start.y) * p.t;
+      v.setView(st.z, { x: st.x, y: st.y });
+    },
+    onComplete: () => { focusTween = null; },
   });
 }
 

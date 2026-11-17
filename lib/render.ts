@@ -18,6 +18,31 @@ export interface RenderOpts {
   width: number;
   height: number;
   highlight?: string | null;
+  /** only draw things overlapping this rect (metres) — used for detail tiles */
+  clip?: { x0: number; y0: number; x1: number; y1: number };
+}
+
+function bbox(s: Space): [number, number, number, number] {
+  if (s.rect) return [s.rect.x, s.rect.y, s.rect.x + s.rect.w, s.rect.y + s.rect.h];
+  if (s.circle) return [s.circle.cx - s.circle.r, s.circle.cy - s.circle.r, s.circle.cx + s.circle.r, s.circle.cy + s.circle.r];
+  if (s.poly) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of s.poly) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    return [x0, y0, x1, y1];
+  }
+  return [0, 0, 0, 0];
+}
+
+function visibleIn(o: RenderOpts, s: Space, margin: number) {
+  const c = o.clip;
+  if (!c) return true;
+  const [x0, y0, x1, y1] = bbox(s);
+  return x1 + margin >= c.x0 && x0 - margin <= c.x1 && y1 + margin >= c.y0 && y0 - margin <= c.y1;
+}
+
+/** stable randomness per space, so detail tiles always agree with each other */
+function spaceRnd(s: Space) {
+  return mulberry(Math.floor(hashStr(s.id) * 1000) + 17);
 }
 
 /** Draw a whole section (parchment + ink) into ctx. */
@@ -363,10 +388,12 @@ function drawInterior(
   }
 
   // decor & labels
-  for (const s of spaces) drawDecor(ctx, s, P, rnd);
-  for (const s of spaces) drawExtras(ctx, s, P, rnd);
-  for (const s of spaces) drawLabel(ctx, s, P, s.id === o.highlight);
-  for (const s of spaces) drawNotes(ctx, sec, s, false);
+  const near = spaces.filter((s) => visibleIn(o, s, 30));
+  for (const s of near) drawDecor(ctx, s, P, spaceRnd(s));
+  for (const s of near) drawExtras(ctx, s, P, spaceRnd(s));
+  for (const s of near) drawLabel(ctx, s, P, s.id === o.highlight);
+  for (const s of near) drawNotes(ctx, sec, s, false);
+  void rnd;
   void m; void k;
 }
 
@@ -445,10 +472,12 @@ function drawGrounds(ctx: CanvasRenderingContext2D, sec: Section, P: (n: number)
       shapePath(ctx, s);
       ctx.clip();
       const r = mulberry(42);
+      const c = o.clip;
       for (let i = 0; i < 1500; i++) {
-        const x = r() * 760, y = r() * 740;
+        const x = r() * 760, y = r() * 740, sz = 7 + r() * 7;
+        if (c && (x + 16 < c.x0 || x - 16 > c.x1 || y + 20 < c.y0 || y - 16 > c.y1)) continue;
         if (!pip(x, y, s.poly!)) continue;
-        tree(ctx, x, y, 7 + r() * 7, r, P);
+        tree(ctx, x, y, sz, mulberry(i * 7919 + 3), P);
       }
       ctx.restore();
       ctx.strokeStyle = INK_SOFT;
@@ -498,7 +527,7 @@ function drawGrounds(ctx: CanvasRenderingContext2D, sec: Section, P: (n: number)
         shapePath(ctx, s);
         ctx.stroke();
       }
-      drawDecor(ctx, s, P, rnd);
+      drawDecor(ctx, s, P, spaceRnd(s));
     }
   }
   // village scatter of extra cottages
@@ -516,8 +545,8 @@ function drawGrounds(ctx: CanvasRenderingContext2D, sec: Section, P: (n: number)
   ctx.beginPath(); ctx.moveTo(1300, 742); ctx.lineTo(W - 10, 742); ctx.stroke();
   for (let x = 1300; x < W - 10; x += 6) { ctx.beginPath(); ctx.moveTo(x, 738); ctx.lineTo(x, 746); ctx.stroke(); }
   ctx.restore();
-  for (const s of sec.spaces) drawLabel(ctx, s, P, s.id === o.highlight);
-  for (const s of sec.spaces) drawNotes(ctx, sec, s, true);
+  for (const s of sec.spaces) if (visibleIn(o, s, 120)) drawLabel(ctx, s, P, s.id === o.highlight);
+  for (const s of sec.spaces) if (visibleIn(o, s, 120)) drawNotes(ctx, sec, s, true);
   void H;
 }
 

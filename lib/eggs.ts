@@ -43,7 +43,7 @@ let awaiting: string | null = null;
 let awaitingUntil = 0;
 let tapestryClicks: number[] = [];
 
-export const EGG_COUNT = 24;
+export const EGG_COUNT = 33;
 
 function expect(what: string, secs = 40) {
   awaiting = what;

@@ -210,8 +210,8 @@ button, input { font: inherit; color: inherit; }
   font-size: 19px;
   line-height: 1.38;
   font-style: italic;
-  pointer-events: auto;
-  cursor: pointer;
+  /* never block zooming or dragging the map underneath */
+  pointer-events: none;
 }
 .msg .ch { display: inline-block; white-space: pre; }
 .msg .by { display: block; text-align: right; font-family: var(--script); font-style: normal; font-size: 28px; margin-top: 2px; color: var(--ink-soft); }
