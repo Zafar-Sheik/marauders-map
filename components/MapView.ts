@@ -294,6 +294,37 @@ export class MapView {
       ctx.restore();
     }
 
+    // the Grand Staircase: flights that swing to new landings every so often
+    for (const sp2 of this.sec.spaces) {
+      if (sp2.decor !== "grandstair" || !sp2.rect) continue;
+      const r = sp2.rect;
+      ctx.save();
+      ctx.setTransform(m.multiply(new DOMMatrix().scale(this.k)));
+      ctx.strokeStyle = "rgba(56,34,15,0.9)";
+      ctx.fillStyle = "rgba(233,214,168,0.85)";
+      ctx.lineWidth = 2.2 / this.k;
+      const t = now / 1000;
+      for (let i = 0; i < 3; i++) {
+        const period = 13 + i * 4;
+        const phase = Math.floor((t + i * 5) / period);
+        const local = ((t + i * 5) % period) / period;
+        const choose = (n: number) => [-0.55, -0.25, 0.25, 0.55][Math.abs(Math.floor(Math.sin(n * 91.7 + i * 13.1) * 1000)) % 4];
+        const from = choose(phase), to = choose(phase + 1);
+        const e = local < 0.82 ? 0 : (1 - Math.cos(((local - 0.82) / 0.18) * Math.PI)) / 2;
+        const ang = from + (to - from) * e;
+        ctx.save();
+        ctx.translate(r.x + r.w / 2, r.y + 8 + i * 12);
+        ctx.rotate(ang);
+        ctx.fillRect(-9, -1.8, 18, 3.6);
+        ctx.strokeRect(-9, -1.8, 18, 3.6);
+        ctx.beginPath();
+        for (let x = -8; x < 9; x += 1.15) { ctx.moveTo(x, -1.8); ctx.lineTo(x, 1.8); }
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
     // footprints & names
     ctx.save();
     ctx.setTransform(m);

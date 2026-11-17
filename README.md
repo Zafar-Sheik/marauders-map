@@ -19,6 +19,9 @@ npm run dev     # http://localhost:3000
 | **Floors 1–7** | Hospital Wing, Transfiguration, McGonagall's office, History of Magic, Moaning Myrtle's lavatory, Trophy Room, Charms, Defence Against the Dark Arts, the out-of-bounds third-floor corridor, the Library and Restricted Section, the mirror classroom, Prefects' bathroom, Flitwick's office, the Fat Lady, the Room of Requirement (hidden) and more |
 | **The Towers** | Gryffindor common room and dormitories, Ravenclaw common room, Divination (North Tower), Astronomy Tower, Headmaster's office, the Owlery |
 
+### Drawing style
+The map is drawn in the general style of the on-screen prop, though none of the film artwork is copied: it's light cream parchment with near-black brown ink. Walls are wobbly, hand-inked double lines that cross at the corners, filled with hatching. Corridors have pillars along them, with their names written along their length. Every room has furniture (tables, benches, beds, bookcases, fireplaces, rugs, cauldrons, sinks and windows) and the Marauders' own handwritten notes crammed into its corners. Lettering is hand-jittered, names sit on little unfurled scrolls, and the flights of the Grand Staircase swing to new landings while you watch.
+
 ### Scale
 Everything is laid out in metres, with a scale bar on each sheet. All castle floors share one 360 × 240 m frame, so the Grand Staircase, the corridors and the towers sit in the same place on every floor. The grounds use a 1500 × 800 m frame and the tower tops a 180 × 160 m frame. The books never give an architectural plan, so the floor each room sits on follows canon where canon says (see below), and the rest of the layout is our own.
 

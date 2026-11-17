@@ -125,26 +125,35 @@ export function drawNameFlag(
   ctx.moveTo(x, y);
   ctx.lineTo(bx, by + h);
   ctx.stroke();
-  // banner with swallowtail
-  ctx.fillStyle = "rgba(236,219,176,0.92)";
+  // a little unfurled scroll: body plus curled ends
+  const w = tw + padX * 2;
+  ctx.fillStyle = "rgba(240,226,188,0.94)";
+  ctx.lineWidth = (emphasised ? 1.6 : 1.1) * ui;
   ctx.beginPath();
-  ctx.moveTo(bx, by);
-  ctx.lineTo(bx + tw + padX * 2, by);
-  ctx.lineTo(bx + tw + padX * 2 - h * 0.28, by + h / 2);
-  ctx.lineTo(bx + tw + padX * 2, by + h);
-  ctx.lineTo(bx, by + h);
+  ctx.moveTo(bx, by + h * 0.12);
+  ctx.quadraticCurveTo(bx + w / 2, by - h * 0.18, bx + w, by + h * 0.12);
+  ctx.lineTo(bx + w, by + h * 0.92);
+  ctx.quadraticCurveTo(bx + w / 2, by + h * 0.62, bx, by + h * 0.92);
   ctx.closePath();
   ctx.fill();
-  ctx.lineWidth = (emphasised ? 1.6 : 1.1) * ui;
   ctx.stroke();
+  for (const [ex, dir] of [[bx, -1], [bx + w, 1]] as [number, number][]) {
+    ctx.beginPath();
+    ctx.ellipse(ex + dir * h * 0.16, by + h * 0.52, h * 0.2, h * 0.44, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(ex + dir * h * 0.16, by + h * 0.52, h * 0.08, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.fillStyle = INK;
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
-  ctx.fillText(text, bx + padX * 0.8, by + h / 2 + fs * 0.05);
+  ctx.fillText(text, bx + padX, by + h * 0.5);
   // the dot
   ctx.beginPath();
   ctx.arc(x, y, 2.2 * ui, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
-  return { x: bx, y: by, w: tw + padX * 2, h };
+  return { x: bx, y: by, w, h };
 }

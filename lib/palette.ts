@@ -1,15 +1,14 @@
 /**
- * Colours sampled from the prop map seen on screen and in photographs of the
- * printed replicas: a warm, yellowed parchment that browns toward the edges and
- * creases, with iron-gall style brown-black ink that fades to sepia.
+ * Light, warm cream parchment that browns toward the edges and creases, with
+ * near-black brown ink fading to sepia — the general look of the on-screen map.
  */
-export const INK = "#38220f";
+export const INK = "#2e1b0c";
 export const INK_SOFT = "#5c3b1e";
 export const INK_FADED = "rgba(74, 46, 22, 0.55)";
 export const INK_WASH = "rgba(92, 58, 26, 0.07)";
-export const PARCH_LIGHT = "#efdfb6";
-export const PARCH = "#e3cc9a";
-export const PARCH_MID = "#d4b47d";
+export const PARCH_LIGHT = "#f3e6c3";
+export const PARCH = "#ead7a9";
+export const PARCH_MID = "#dcc08a";
 export const PARCH_DARK = "#a97f47";
 export const PARCH_BURN = "#6e4a24";
 export const WATER_INK = "rgba(56, 34, 15, 0.42)";

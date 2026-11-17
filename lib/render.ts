@@ -2,6 +2,7 @@ import type { Hotspot, Pt, Section, Space } from "./types";
 import { FONTS, INK, INK_FADED, INK_SOFT, INK_WASH, WATER_INK } from "./palette";
 import { makeParchment, mulberry } from "./parchment";
 import { pxPerMetre, sheetPixels, FLAP_H, SHEET_H } from "./sheet";
+import { NOTES } from "./notes";
 
 export const FOLD_ROWS = [FLAP_H / SHEET_H, 1 - FLAP_H / SHEET_H];
 
@@ -235,11 +236,15 @@ function drawInterior(
     ctx.strokeStyle = hidden ? "rgba(56,34,15,0.0)" : hatch;
     shapePath(ctx, s);
     ctx.stroke();
-    ctx.lineWidth = P(1.6);
+    ctx.lineWidth = P(1.7);
     ctx.strokeStyle = hidden ? INK_FADED : INK;
-    shapePath(ctx, s, band / 2);
+    const seed = hashStr(sec.id + s.id);
+    ctx.beginPath();
+    roughShape(ctx, s, band / 2, 0.16, seed, hidden ? 0 : 0.9);
     ctx.stroke();
-    shapePath(ctx, s, -band / 2);
+    ctx.lineWidth = P(1.2);
+    ctx.beginPath();
+    roughShape(ctx, s, -band / 2, 0.12, seed + 7, 0);
     ctx.stroke();
     ctx.restore();
   }
@@ -285,9 +290,83 @@ function drawInterior(
       ctx.stroke();
     }
 
+  // windows on the wall facing away from the door
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = P(1.2);
+  for (const s of spaces) {
+    if (s.kind === "room" && s.rect) {
+      const r = s.rect;
+      const d = s.doors?.[0];
+      let side: "t" | "b" | "l" | "r" = "t";
+      if (d) {
+        const dt = Math.abs(d[1] - r.y), db = Math.abs(d[1] - r.y - r.h), dl = Math.abs(d[0] - r.x), dr = Math.abs(d[0] - r.x - r.w);
+        const mn = Math.min(dt, db, dl, dr);
+        side = mn === dt ? "b" : mn === db ? "t" : mn === dl ? "r" : "l";
+      }
+      const horiz = side === "t" || side === "b";
+      const len = horiz ? r.w : r.h;
+      for (let t = 3.5; t < len - 2.5; t += 5.5) {
+        const x = horiz ? r.x + t : side === "l" ? r.x : r.x + r.w;
+        const y = horiz ? (side === "t" ? r.y : r.y + r.h) : r.y + t;
+        ctx.save();
+        ctx.translate(x, y);
+        if (!horiz) ctx.rotate(Math.PI / 2);
+        ctx.fillStyle = "#e9d6a8";
+        ctx.fillRect(-1, -band / 2, 2, band);
+        ctx.strokeRect(-1, -band / 2, 2, band);
+        ctx.beginPath(); ctx.moveTo(0, -band / 2); ctx.lineTo(0, band / 2); ctx.stroke();
+        ctx.restore();
+      }
+    } else if (s.kind === "tower" && s.circle) {
+      const c = s.circle;
+      for (let a = 0.2; a < Math.PI * 2; a += Math.PI / 5) {
+        if (a > Math.PI * 0.35 && a < Math.PI * 0.65) continue;
+        ctx.save();
+        ctx.translate(c.cx + Math.cos(a) * c.r, c.cy + Math.sin(a) * c.r);
+        ctx.rotate(a);
+        ctx.fillStyle = "#e9d6a8";
+        ctx.fillRect(-band / 2, -0.7, band, 1.4);
+        ctx.strokeRect(-band / 2, -0.7, band, 1.4);
+        ctx.restore();
+      }
+    }
+  }
+  // corridors: pillars, torches and their names written along them
+  for (const s of spaces) {
+    if (s.kind !== "corridor" || !s.rect) continue;
+    const r = s.rect;
+    const horiz = r.w > r.h;
+    const len = horiz ? r.w : r.h;
+    ctx.fillStyle = INK;
+    for (let t = 6; t < len - 3; t += 9) {
+      for (const e of [1.3, (horiz ? r.h : r.w) - 1.3]) {
+        const x = horiz ? r.x + t : r.x + e, y = horiz ? r.y + e : r.y + t;
+        ctx.fillRect(x - 0.55, y - 0.55, 1.1, 1.1);
+      }
+    }
+    if (s.label !== false) {
+      ctx.save();
+      ctx.font = `italic ${1.5}px ${FONTS.italic}`;
+      ctx.fillStyle = INK_SOFT;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const name = s.name.toLowerCase();
+      for (let t = 40; t < len - 20; t += 70) {
+        ctx.save();
+        if (horiz) ctx.translate(r.x + t, r.y + r.h / 2 + 2.2);
+        else { ctx.translate(r.x + r.w / 2 + 2.2, r.y + t); ctx.rotate(Math.PI / 2); }
+        ctx.fillText(`~ ${name} ~`, 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+  }
+
   // decor & labels
   for (const s of spaces) drawDecor(ctx, s, P, rnd);
+  for (const s of spaces) drawExtras(ctx, s, P, rnd);
   for (const s of spaces) drawLabel(ctx, s, P, s.id === o.highlight);
+  for (const s of spaces) drawNotes(ctx, sec, s, false);
   void m; void k;
 }
 
@@ -438,11 +517,123 @@ function drawGrounds(ctx: CanvasRenderingContext2D, sec: Section, P: (n: number)
   for (let x = 1300; x < W - 10; x += 6) { ctx.beginPath(); ctx.moveTo(x, 738); ctx.lineTo(x, 746); ctx.stroke(); }
   ctx.restore();
   for (const s of sec.spaces) drawLabel(ctx, s, P, s.id === o.highlight);
+  for (const s of sec.spaces) drawNotes(ctx, sec, s, true);
   void H;
 }
 
 /* ================================================================== */
 /* primitives                                                          */
+
+export function hashStr(t: string) {
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 16777619);
+  return ((h >>> 0) % 10000) / 37;
+}
+
+/** a hand-drawn line: gentle wobble, optional overshoot past the ends */
+function roughLine(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, amp: number, seed: number, over: number) {
+  const L = Math.hypot(x1 - x0, y1 - y0);
+  if (L < 1e-6) return;
+  const ux = (x1 - x0) / L, uy = (y1 - y0) / L, nx = -uy, ny = ux;
+  const ax = x0 - ux * over, ay = y0 - uy * over;
+  const T = L + over * 2;
+  const n = Math.max(2, Math.ceil(T / 2.2));
+  for (let i = 0; i <= n; i++) {
+    const d = (i / n) * T;
+    const w = amp * (Math.sin(d * 0.55 + seed) * 0.6 + Math.sin(d * 1.7 + seed * 2.3) * 0.4);
+    const x = ax + ux * d + nx * w, y = ay + uy * d + ny * w;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+}
+
+function roughShape(ctx: CanvasRenderingContext2D, s: Space, grow: number, amp: number, seed: number, over: number) {
+  if (s.rect) {
+    const r = s.rect;
+    const x0 = r.x - grow, y0 = r.y - grow, x1 = r.x + r.w + grow, y1 = r.y + r.h + grow;
+    roughLine(ctx, x0, y0, x1, y0, amp, seed, over);
+    roughLine(ctx, x1, y0, x1, y1, amp, seed + 1.3, over);
+    roughLine(ctx, x1, y1, x0, y1, amp, seed + 2.6, over);
+    roughLine(ctx, x0, y1, x0, y0, amp, seed + 3.9, over);
+  } else if (s.circle) {
+    const c = s.circle, R = Math.max(0.1, c.r + grow);
+    const n = Math.max(24, Math.ceil(R * 2));
+    for (let i = 0; i <= n + 1; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const w = amp * (Math.sin(a * 5 + seed) * 0.6 + Math.sin(a * 13 + seed * 2) * 0.4);
+      const x = c.cx + Math.cos(a) * (R + w), y = c.cy + Math.sin(a) * (R + w);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+  } else if (s.poly) {
+    s.poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+  }
+}
+
+/** the Marauders' scribbled marginalia inside each room */
+function drawNotes(ctx: CanvasRenderingContext2D, sec: Section, s: Space, outdoor: boolean) {
+  const notes = NOTES[`${sec.id}:${s.id}`];
+  if (!notes || !notes.length) return;
+  ctx.save();
+  ctx.fillStyle = INK_SOFT;
+  ctx.textBaseline = "middle";
+  if (outdoor) {
+    const fs = 6.2;
+    ctx.font = `italic ${fs}px ${FONTS.italic}`;
+    ctx.textAlign = "center";
+    let x = 0, y = 0;
+    if (s.rect) { x = s.rect.x + s.rect.w / 2; y = s.rect.y + s.rect.h + 7; }
+    else if (s.circle) { x = s.circle.cx; y = s.circle.cy + s.circle.r + 18; }
+    else if (s.poly) { const xs = s.poly.map((p) => p[0]), ys = s.poly.map((p) => p[1]); x = (Math.min(...xs) + Math.max(...xs)) / 2; y = Math.max(...ys) + 8; }
+    if (s.id === "pitch") y += 26;
+    if (s.id === "hut") y += 4;
+    notes.forEach((n, i) => ctx.fillText(n, x, y + i * fs * 1.15));
+    ctx.restore();
+    return;
+  }
+  const fit = (t: string, maxW: number, fs: number) => {
+    ctx.font = `italic ${fs}px ${FONTS.italic}`;
+    const w = ctx.measureText(t).width;
+    if (w > maxW) { fs *= maxW / w; ctx.font = `italic ${fs}px ${FONTS.italic}`; }
+  };
+  if (s.rect) {
+    const r = s.rect;
+    const pad = 1.9;
+    const fs = Math.min(1.45, Math.max(0.9, Math.min(r.w, r.h) / 14));
+    const slots: { x: number; y: number; align: CanvasTextAlign; rot: number; maxW: number }[] = [
+      { x: r.x + pad, y: r.y + pad + 0.6, align: "left", rot: 0, maxW: r.w * 0.47 },
+      { x: r.x + r.w - pad, y: r.y + r.h - pad - 0.6, align: "right", rot: 0, maxW: r.w * 0.47 },
+      { x: r.x + r.w - pad, y: r.y + pad + 0.6, align: "right", rot: 0, maxW: r.w * 0.47 },
+      { x: r.x + pad, y: r.y + r.h - pad - 0.6, align: "left", rot: 0, maxW: r.w * 0.47 },
+      { x: r.x + pad + 0.4, y: r.y + r.h / 2, align: "center", rot: -Math.PI / 2, maxW: r.h * 0.5 },
+      { x: r.x + r.w - pad - 0.4, y: r.y + r.h / 2, align: "center", rot: Math.PI / 2, maxW: r.h * 0.5 },
+      { x: r.x + r.w / 2, y: r.y + r.h * 0.28, align: "center", rot: 0, maxW: r.w * 0.8 },
+    ];
+    notes.slice(0, slots.length).forEach((n, i) => {
+      const sl = slots[i];
+      ctx.save();
+      ctx.translate(sl.x, sl.y);
+      ctx.rotate(sl.rot + (hashStr(n) % 1 - 0.5) * 0.04);
+      ctx.textAlign = sl.align;
+      fit(n, sl.maxW, fs);
+      ctx.fillText(n, 0, 0);
+      ctx.restore();
+    });
+  } else if (s.circle) {
+    const c = s.circle;
+    const fs = Math.min(1.25, c.r / 11);
+    notes.forEach((n, i) => {
+      const a = Math.PI / 2 + ((i + 1) / (notes.length + 1) - 0.5) * Math.PI * 1.1 + Math.PI;
+      const rr = c.r * 0.64;
+      ctx.save();
+      ctx.translate(c.cx + Math.cos(a) * rr * 1.05, c.cy + Math.sin(a) * rr * 0.6 + c.r * 0.38);
+      ctx.textAlign = "center";
+      fit(n, c.r * 1.1, fs);
+      ctx.fillText(n, 0, 0);
+      ctx.restore();
+    });
+  }
+  ctx.restore();
+}
 
 export function shapePath(ctx: CanvasRenderingContext2D, s: Space, grow = 0) {
   ctx.beginPath();
@@ -709,17 +900,13 @@ function drawDecor(ctx: CanvasRenderingContext2D, s: Space, P: (n: number) => nu
     }
     case "grandstair": {
       if (!r) break;
-      // flights criss-crossing the shaft
-      for (let i = 0; i < 3; i++) {
-        const y0 = r.y + 6 + i * 11;
-        const fl = i % 2 ? -1 : 1;
-        ctx.save();
-        ctx.translate(r.x + r.w / 2, y0 + 3);
-        ctx.rotate(fl * 0.35);
-        ctx.strokeRect(-10, -2, 20, 4);
-        for (let x = -9; x < 10; x += 1.4) { ctx.beginPath(); ctx.moveTo(x, -2); ctx.lineTo(x, 2); ctx.stroke(); }
-        ctx.restore();
-      }
+      // landings on either side of an open shaft; the flights themselves move (drawn live)
+      ctx.strokeRect(r.x + 2, r.y + 2, 6, r.h - 4);
+      ctx.strokeRect(r.x + r.w - 8, r.y + 2, 6, r.h - 4);
+      ctx.setLineDash([P(3), P(4)]);
+      ctx.strokeRect(r.x + 9.5, r.y + 3, r.w - 19, r.h - 6);
+      ctx.setLineDash([]);
+      for (const lx of [r.x + 5, r.x + r.w - 5]) for (let y = r.y + 4; y < r.y + r.h - 3; y += 1.2) { ctx.beginPath(); ctx.moveTo(lx - 2.6, y); ctx.lineTo(lx + 2.6, y); ctx.stroke(); }
       break;
     }
     case "fountain": {
@@ -778,6 +965,125 @@ function drawDecor(ctx: CanvasRenderingContext2D, s: Space, P: (n: number) => nu
   ctx.restore();
 }
 
+function fireplace(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, rot: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.strokeRect(-w / 2, 0, w, 1.4);
+  ctx.beginPath();
+  ctx.moveTo(-w * 0.32, 1.4); ctx.lineTo(-w * 0.22, 2.6); ctx.lineTo(w * 0.22, 2.6); ctx.lineTo(w * 0.32, 1.4); ctx.stroke();
+  // flames
+  for (let i = -1; i <= 1; i++) { ctx.beginPath(); ctx.moveTo(i * w * 0.1 - 0.3, 1.4); ctx.quadraticCurveTo(i * w * 0.1, 0.4, i * w * 0.1 + 0.3, 1.4); ctx.stroke(); }
+  ctx.restore();
+}
+
+function shelves(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number) {
+  // a bookcase along a wall: long thin rectangle with book ticks
+  const horiz = Math.abs(x1 - x0) > Math.abs(y1 - y0);
+  ctx.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0) || 1, Math.abs(y1 - y0) || 1);
+  ctx.beginPath();
+  if (horiz) for (let x = Math.min(x0, x1) + 0.6; x < Math.max(x0, x1); x += 0.7) { ctx.moveTo(x, Math.min(y0, y1)); ctx.lineTo(x, Math.max(y0, y1)); }
+  else for (let y = Math.min(y0, y1) + 0.6; y < Math.max(y0, y1); y += 0.7) { ctx.moveTo(Math.min(x0, x1), y); ctx.lineTo(Math.max(x0, x1), y); }
+  ctx.stroke();
+}
+
+function rug(ctx: CanvasRenderingContext2D, cx: number, cy: number, w: number, h: number) {
+  ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+  ctx.strokeRect(cx - w / 2 + 0.6, cy - h / 2 + 0.6, w - 1.2, h - 1.2);
+  ctx.beginPath();
+  for (let x = cx - w / 2; x <= cx + w / 2; x += 0.8) { ctx.moveTo(x, cy - h / 2); ctx.lineTo(x, cy - h / 2 - 0.5); ctx.moveTo(x, cy + h / 2); ctx.lineTo(x, cy + h / 2 + 0.5); }
+  ctx.stroke();
+}
+
+/** furniture layered on top of the basic decor, for a denser, hand-annotated look */
+function drawExtras(ctx: CanvasRenderingContext2D, s: Space, P: (n: number) => number, rnd: () => number) {
+  const r = s.rect, c = s.circle;
+  ctx.save();
+  ctx.strokeStyle = INK_SOFT;
+  ctx.fillStyle = INK_SOFT;
+  ctx.lineWidth = P(1.1);
+  if (r && s.kind === "room") {
+    switch (s.decor) {
+      case "greathall":
+        for (let x = r.x + 5; x < r.x + r.w - 4; x += 7) for (const y of [r.y + 2.2, r.y + r.h - 2.2]) { ctx.beginPath(); ctx.arc(x, y, 0.9, 0, Math.PI * 2); ctx.stroke(); }
+        fireplace(ctx, r.x + r.w / 2, r.y + r.h - 0.2, 5, Math.PI);
+        // the lectern / owl podium before the staff table
+        ctx.beginPath(); ctx.arc(r.x + r.w - 12, r.y + r.h / 2, 1.1, 0, Math.PI * 2); ctx.stroke();
+        // house banners hanging above each table
+        for (let i = 0; i < 4; i++) { const y = r.y + 7.7 + i * 5.2; ctx.beginPath(); ctx.moveTo(r.x + 2, y - 1); ctx.lineTo(r.x + 4.4, y - 1); ctx.lineTo(r.x + 4.4, y + 1); ctx.lineTo(r.x + 3.2, y + 0.4); ctx.lineTo(r.x + 2, y + 1); ctx.closePath(); ctx.stroke(); }
+        break;
+      case "classroom":
+        // blackboard on the far wall and cupboards at the back
+        ctx.lineWidth = P(2);
+        ctx.beginPath(); ctx.moveTo(r.x + r.w * 0.3, r.y + 1.2); ctx.lineTo(r.x + r.w * 0.7, r.y + 1.2); ctx.stroke();
+        ctx.lineWidth = P(1.1);
+        shelves(ctx, r.x + 1.2, r.y + r.h - 2.4, r.x + Math.min(10, r.w * 0.3), r.y + r.h - 1.2);
+        ctx.beginPath(); ctx.arc(r.x + r.w / 2 + 6, r.y + 3.6, 0.7, 0, Math.PI * 2); ctx.stroke();
+        break;
+      case "office":
+        shelves(ctx, r.x + 1.2, r.y + 1.2, r.x + r.w - 1.2, r.y + 2.4);
+        fireplace(ctx, r.x + 0.2, r.y + r.h / 2, Math.min(5, r.h * 0.3), -Math.PI / 2);
+        rug(ctx, r.x + r.w / 2, r.y + r.h / 2 + 4.4, Math.min(8, r.w * 0.5), 3.2);
+        break;
+      case "potions":
+        shelves(ctx, r.x + 1.2, r.y + 1.2, r.x + r.w - 1.2, r.y + 2.4);
+        shelves(ctx, r.x + 1.2, r.y + 3.4, r.x + 2.4, r.y + r.h - 1.2);
+        ctx.strokeRect(r.x + r.w / 2 - 4, r.y + 4, 8, 2.4);
+        break;
+      case "hospital":
+        for (let y = r.y + 5; y < r.y + r.h - 5; y += 5) { ctx.beginPath(); ctx.moveTo(r.x + 9, y - 0.6); ctx.quadraticCurveTo(r.x + 10, y + 1.3, r.x + 9, y + 3.2); ctx.stroke(); }
+        shelves(ctx, r.x + r.w / 2 - 6, r.y + 1.2, r.x + r.w / 2 + 6, r.y + 2.4);
+        break;
+      case "library": {
+        for (let x = r.x + 6; x < r.x + r.w - 10; x += 18) {
+          ctx.strokeRect(x, r.y + r.h - 9, 9, 3);
+          for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.arc(x + 1.5 + i * 2, r.y + r.h - 10, 0.5, 0, Math.PI * 2); ctx.arc(x + 1.5 + i * 2, r.y + r.h - 5, 0.5, 0, Math.PI * 2); ctx.stroke(); }
+        }
+        ctx.strokeRect(r.x + 4, r.y + 2.2, 7, 2.4);
+        break;
+      }
+      case "kitchen":
+        for (const x of [r.x + 2, r.x + 8, r.x + 14]) { ctx.strokeRect(x, r.y + 1.2, 4, 2.4); ctx.beginPath(); ctx.arc(x + 2, r.y + 2.4, 0.8, 0, Math.PI * 2); ctx.stroke(); }
+        for (let i = 0; i < 18; i++) { ctx.beginPath(); ctx.arc(r.x + 4 + rnd() * (r.w - 14), r.y + 5 + rnd() * (r.h - 8), 0.35, 0, Math.PI * 2); ctx.fill(); }
+        break;
+      case "commonroom":
+        fireplace(ctx, r.x + r.w / 2, r.y + 0.2, 6, 0);
+        rug(ctx, r.x + r.w / 2, r.y + r.h / 2, r.w * 0.4, r.h * 0.3);
+        break;
+      case "lakewindows":
+        fireplace(ctx, r.x + 0.2, r.y + r.h / 2, 6, -Math.PI / 2);
+        for (let i = 0; i < 6; i++) { ctx.beginPath(); ctx.arc(r.x + 14 + i * 6, r.y + 6, 1.3, 0, Math.PI * 2); ctx.stroke(); }
+        rug(ctx, r.x + r.w / 2, r.y + r.h / 2 + 2, 16, 6);
+        break;
+      case "bathroom":
+        if (s.id === "prefects") { ctx.beginPath(); ctx.ellipse(r.x + r.w / 2, r.y + r.h / 2 + 2, r.w * 0.28, r.h * 0.2, 0, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.ellipse(r.x + r.w / 2, r.y + r.h / 2 + 2, r.w * 0.24, r.h * 0.16, 0, 0, Math.PI * 2); ctx.stroke(); for (let a = 0; a < Math.PI * 2; a += Math.PI / 10) { ctx.beginPath(); ctx.arc(r.x + r.w / 2 + Math.cos(a) * r.w * 0.31, r.y + r.h / 2 + 2 + Math.sin(a) * r.h * 0.23, 0.35, 0, Math.PI * 2); ctx.fill(); } }
+        else { ctx.beginPath(); ctx.arc(r.x + r.w / 2, r.y + r.h / 2 + 2, 2.6, 0, Math.PI * 2); ctx.stroke(); for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) { ctx.beginPath(); ctx.arc(r.x + r.w / 2 + Math.cos(a) * 2.6, r.y + r.h / 2 + 2 + Math.sin(a) * 2.6, 0.6, 0, Math.PI * 2); ctx.stroke(); } }
+        break;
+      case "trophies":
+        for (const y of [r.y + 1.4, r.y + r.h - 2.6]) ctx.strokeRect(r.x + 1.4, y, r.w - 2.8, 1.2);
+        break;
+      default:
+        if (!s.decor && r.w > 10 && r.h > 10) {
+          rug(ctx, r.x + r.w / 2, r.y + r.h / 2 + 3, Math.min(10, r.w * 0.4), Math.min(5, r.h * 0.25));
+          shelves(ctx, r.x + 1.2, r.y + 1.2, r.x + Math.min(r.w - 1.2, 10), r.y + 2.2);
+        }
+    }
+  }
+  if (c && s.kind === "tower") {
+    // spiral stair in every tower
+    const sx = c.cx - c.r * 0.55, sy = c.cy - c.r * 0.45, sr = Math.min(3, c.r * 0.2);
+    ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx, sy, sr * 0.25, 0, Math.PI * 2); ctx.stroke();
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 6) { ctx.beginPath(); ctx.moveTo(sx + Math.cos(a) * sr * 0.25, sy + Math.sin(a) * sr * 0.25); ctx.lineTo(sx + Math.cos(a + 0.3) * sr, sy + Math.sin(a + 0.3) * sr); ctx.stroke(); }
+    if (s.decor === "commonroom" || s.decor === "headmaster") { ctx.beginPath(); ctx.arc(c.cx, c.cy + c.r * 0.15, c.r * 0.28, 0, Math.PI * 2); ctx.stroke(); }
+    if (s.decor === "headmaster") {
+      ctx.beginPath(); ctx.moveTo(c.cx + c.r * 0.6, c.cy - c.r * 0.5); ctx.lineTo(c.cx + c.r * 0.6, c.cy - c.r * 0.2); ctx.moveTo(c.cx + c.r * 0.5, c.cy - c.r * 0.5); ctx.lineTo(c.cx + c.r * 0.7, c.cy - c.r * 0.5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(c.cx - 1.2, c.cy - c.r * 0.62); ctx.lineTo(c.cx, c.cy - c.r * 0.8); ctx.lineTo(c.cx + 1.2, c.cy - c.r * 0.62); ctx.closePath(); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 function drawLabel(ctx: CanvasRenderingContext2D, s: Space, P: (n: number) => number, hi: boolean) {
   if (s.label === false) return;
   if (s.kind === "corridor" && !s.label) return;
@@ -824,8 +1130,15 @@ export function spaced(ctx: CanvasRenderingContext2D, t: string, x: number, y: n
   let cx = x - total / 2;
   const prev = ctx.textAlign;
   ctx.textAlign = "left";
+  const fs = parseFloat(/([\d.]+)px/.exec(ctx.font)?.[1] ?? "10");
   chars.forEach((c, i) => {
-    ctx.fillText(c, cx, y);
+    const j = Math.sin(i * 12.9898 + t.length * 78.233) * 43758.5453;
+    const f = j - Math.floor(j);
+    ctx.save();
+    ctx.translate(cx + widths[i] / 2, y + (f - 0.5) * fs * 0.07);
+    ctx.rotate((f - 0.5) * 0.07);
+    ctx.fillText(c, -widths[i] / 2, 0);
+    ctx.restore();
     cx += widths[i] + sp;
   });
   ctx.textAlign = prev;
